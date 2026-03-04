@@ -15,8 +15,8 @@ import {
 	type Runtime,
 } from '@chainlink/cre-sdk'
 import { type Address, decodeFunctionResult, encodeFunctionData, type Hex, zeroAddress } from 'viem'
-import { MockPool } from '../../../cre/contracts/abi/MockPool.js'
-import { HumanConsensus } from '../../../cre/contracts/abi/HumanConsensus.js'
+import { MockPool } from './abi/MockPool'
+import { HumanConsensus } from './abi/HumanConsensus'
 const SECONDS_PER_YEAR = BigInt(31_536_000)
 const RAY = BigInt(10) ** BigInt(27)
 const WAD = BigInt(10) ** BigInt(18)
