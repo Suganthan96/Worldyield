@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
 
     console.log('[Agent Test] Mastra instance:', !!mastra)
     
-    const agentName = 'test-agent-simple' // Temporarily using simple test agent
+    const agentName = 'yield-agent'
     
     let agent
     try {

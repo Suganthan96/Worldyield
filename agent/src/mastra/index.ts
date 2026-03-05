@@ -3,14 +3,13 @@ import { Mastra } from '@mastra/core/mastra';
 import { PinoLogger } from '@mastra/loggers';
 import { LibSQLStore } from '@mastra/libsql';
 import { Observability, DefaultExporter, CloudExporter, SensitiveDataFilter } from '@mastra/observability';
-// import { yieldRecommendationWorkflow } from './workflows/yield-recommendation-workflow';
-// import { yieldAgent } from './agents/yield-agent';
-import { simpleTestAgent } from './agents/test-agent-simple';
+import { yieldRecommendationWorkflow } from './workflows/yield-recommendation-workflow';
+import { yieldAgent } from './agents/yield-agent';
 
 
 export const mastra = new Mastra({
-  // workflows: { yieldRecommendationWorkflow },
-  agents: { 'test-agent-simple': simpleTestAgent },
+  workflows: { yieldRecommendationWorkflow },
+  agents: { 'yield-agent': yieldAgent },
   storage: new LibSQLStore({
     id: "mastra-storage",
     // stores observability, scores, ... into persistent file storage
