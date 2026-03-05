@@ -11,9 +11,18 @@ import {
 	type Runtime,
 	TxStatus,
 } from '@chainlink/cre-sdk'
-import { type Address, decodeFunctionResult, encodeAbiParameters, encodeFunctionData, formatUnits, Hex, parseAbiParameters, zeroAddress } from 'viem'
+import {
+	type Address,
+	decodeFunctionResult,
+	encodeAbiParameters,
+	encodeFunctionData,
+	formatUnits,
+	Hex,
+	parseAbiParameters,
+	zeroAddress,
+} from 'viem'
 import { z } from 'zod'
-import { HumanConsensus, MockPool } from '../contracts/abi'
+import { HumanConsensus, MockPool, AggregatorV3Interface } from '../contracts/abi'
 
 const SUPPORTED_PROTOCOLS = ['aave-v3', 'compound-v3', 'morpho-vault'] as const
 const protocolSchema = z.enum(SUPPORTED_PROTOCOLS)
@@ -53,16 +62,11 @@ type EVMConfig = z.infer<typeof configSchema.shape.evms.element>
 
 /** ===== Math Helpers ===== **/
 
-// Converts APR (in RAY units) to floating APR
 const aprInRAYToAPR = (apr: bigint): number => parseFloat(formatUnits(apr, 27))
-
-// Converts APR (in RAY units) to APY (compounded)
 const aprInRAYToAPY = (apr: bigint): number => Math.exp(parseFloat(formatUnits(apr, 27))) - 1
-
-// Convert APR diff (RAY) to basis points (divide by 1e23)
-const RAY_TO_BPS_DIVISOR = 100000000000000000000000n // 1e23
+const RAY_TO_BPS_DIVISOR = 100000000000000000000000n
 const aprDiffToBps = (diffRay: bigint): bigint => diffRay / RAY_TO_BPS_DIVISOR
-const WAD_TO_RAY_MULTIPLIER = 1000000000n // 1e9
+const WAD_TO_RAY_MULTIPLIER = 1000000000n
 const SECONDS_PER_YEAR = 31536000n
 const bpsToPct = (bps: number): number => bps / 10000
 const pctDiffToBps = (maxPct: number, curPct: number): number =>
@@ -84,6 +88,115 @@ type ScoredPool = Pool & {
 	verifiedBoostBps: number
 	consensusBoostBps: number
 	effectiveAPY: number
+}
+
+type MarketGuard = {
+	ethUsd: number
+	usdcUsd: number
+	ethUpdatedAt: number
+	usdcUpdatedAt: number
+	isStable: boolean
+	staleness: boolean
+}
+
+/** ===== Chainlink Data Feeds ===== **/
+
+// Sepolia testnet addresses — verified from Chainlink official docs
+const DATA_FEEDS = {
+	ETH_USD:  '0x694AA1769357215DE4FAC081bf1f309aDC325306',
+	USDC_USD: '0xA2F78ab2355fe2f984D808B5CeE7FD0A93D5270E',
+} as const
+
+const readDataFeed = (
+	runtime: Runtime<Config>,
+	feedAddress: string,
+	label: string,
+): { price: number; updatedAt: number; decimals: number } => {
+	const network = getNetwork({
+		chainFamily: 'evm',
+		chainSelectorName: 'ethereum-testnet-sepolia',
+		isTestnet: true,
+	})
+	if (!network) throw new Error('Sepolia network not found for Data Feed read')
+
+	const evmClient = new cre.capabilities.EVMClient(network.chainSelector.selector)
+
+	// 1) Read decimals
+	const decimalsCall = encodeFunctionData({
+		abi: AggregatorV3Interface,
+		functionName: 'decimals',
+	})
+	const decimalsResult = evmClient
+		.callContract(runtime, {
+			call: encodeCallMsg({ from: zeroAddress, to: feedAddress as Address, data: decimalsCall }),
+			blockNumber: LATEST_BLOCK_NUMBER,
+		})
+		.result()
+	const decimals = Number(
+		decodeFunctionResult({
+			abi: AggregatorV3Interface,
+			functionName: 'decimals',
+			data: bytesToHex(decimalsResult.data),
+		}) as unknown as bigint,
+	)
+
+	// 2) Read latestRoundData
+	const roundCall = encodeFunctionData({
+		abi: AggregatorV3Interface,
+		functionName: 'latestRoundData',
+	})
+	const roundResult = evmClient
+		.callContract(runtime, {
+			call: encodeCallMsg({ from: zeroAddress, to: feedAddress as Address, data: roundCall }),
+			blockNumber: LATEST_BLOCK_NUMBER,
+		})
+		.result()
+	const roundData = decodeFunctionResult({
+    abi: AggregatorV3Interface,
+    functionName: 'latestRoundData',
+    data: bytesToHex(roundResult.data),
+}) as readonly [bigint, bigint, bigint, bigint, bigint]
+// [roundId, answer, startedAt, updatedAt, answeredInRound]
+
+const price = Number(roundData[1]) / Math.pow(10, decimals)
+const updatedAt = Number(roundData[3])
+
+	runtime.log(
+		`DataFeed [${label}] price=${price.toFixed(6)} decimals=${decimals} updatedAt=${updatedAt}`,
+	)
+
+	return { price, updatedAt, decimals }
+}
+
+const checkMarketGuard = (runtime: Runtime<Config>): MarketGuard => {
+	runtime.log('Checking Chainlink Data Feeds for market stability...')
+
+	const eth  = readDataFeed(runtime, DATA_FEEDS.ETH_USD,  'ETH/USD')
+	const usdc = readDataFeed(runtime, DATA_FEEDS.USDC_USD, 'USDC/USD')
+
+	const nowSec   = Math.floor(Date.now() / 1000)
+	const ethAge   = nowSec - eth.updatedAt
+	const usdcAge  = nowSec - usdc.updatedAt
+	// was: const staleness = ethAge > 3600 || usdcAge > 3600
+	const staleness = ethAge > 86400 || usdcAge > 86400  // 24 hours for testnet
+
+	// USDC depeg guard: below $0.995 = danger zone
+	const usdcPegged = usdc.price >= 0.995
+	const ethAlive   = eth.price > 0
+	const isStable   = usdcPegged && ethAlive && !staleness
+
+	runtime.log(
+		`MarketGuard | ETH/USD=$${eth.price.toFixed(2)} (age=${ethAge}s) | USDC/USD=$${usdc.price.toFixed(4)} (age=${usdcAge}s) | pegged=${usdcPegged} | stale=${staleness} | STABLE=${isStable}`,
+	)
+
+	return {
+		ethUsd: eth.price,
+		usdcUsd: usdc.price,
+		ethUpdatedAt: eth.updatedAt,
+		usdcUpdatedAt: usdc.updatedAt,
+		isStable,
+		staleness,
+	}
 }
 
 /** ===== EVM/Contract Helpers ===== **/
@@ -118,7 +231,7 @@ const readCurrentLiquidityRate = (
 				to: evmCfg.poolAddress as Address,
 				data: callData,
 			}),
-			blockNumber: LATEST_BLOCK_NUMBER, // warn: use finalized or safe in prod
+			blockNumber: LATEST_BLOCK_NUMBER,
 		})
 		.result()
 
@@ -161,46 +274,26 @@ const readCompoundAPRRay = (
 			},
 		] as const
 
-		// ---------- totalSupply ----------
-		const supplyCall = encodeFunctionData({
-			abi: cometAbi,
-			functionName: 'totalSupply',
-		})
-
+		const supplyCall = encodeFunctionData({ abi: cometAbi, functionName: 'totalSupply' })
 		const supplyResult = evmClient
 			.callContract(runtime, {
-				call: encodeCallMsg({
-					from: zeroAddress,
-					to: evmCfg.poolAddress as Address,
-					data: supplyCall,
-				}),
+				call: encodeCallMsg({ from: zeroAddress, to: evmCfg.poolAddress as Address, data: supplyCall }),
 				blockNumber: LATEST_BLOCK_NUMBER,
 			})
 			.result()
-
 		const totalSupply = decodeFunctionResult({
 			abi: cometAbi,
 			functionName: 'totalSupply',
 			data: bytesToHex(supplyResult.data),
 		}) as bigint
 
-		// ---------- totalBorrow ----------
-		const borrowCall = encodeFunctionData({
-			abi: cometAbi,
-			functionName: 'totalBorrow',
-		})
-
+		const borrowCall = encodeFunctionData({ abi: cometAbi, functionName: 'totalBorrow' })
 		const borrowResult = evmClient
 			.callContract(runtime, {
-				call: encodeCallMsg({
-					from: zeroAddress,
-					to: evmCfg.poolAddress as Address,
-					data: borrowCall,
-				}),
+				call: encodeCallMsg({ from: zeroAddress, to: evmCfg.poolAddress as Address, data: borrowCall }),
 				blockNumber: LATEST_BLOCK_NUMBER,
 			})
 			.result()
-
 		const totalBorrow = decodeFunctionResult({
 			abi: cometAbi,
 			functionName: 'totalBorrow',
@@ -212,37 +305,26 @@ const readCompoundAPRRay = (
 			return BigInt(0)
 		}
 
-		// utilization scaled to 1e18
 		const utilization = (totalBorrow * BigInt(1000000000000000000)) / totalSupply
 
-		// ---------- supplyRate ----------
 		const rateCall = encodeFunctionData({
 			abi: cometAbi,
 			functionName: 'getSupplyRate',
 			args: [utilization],
 		})
-
 		const rateResult = evmClient
 			.callContract(runtime, {
-				call: encodeCallMsg({
-					from: zeroAddress,
-					to: evmCfg.poolAddress as Address,
-					data: rateCall,
-				}),
+				call: encodeCallMsg({ from: zeroAddress, to: evmCfg.poolAddress as Address, data: rateCall }),
 				blockNumber: LATEST_BLOCK_NUMBER,
 			})
 			.result()
-
 		const supplyRatePerSecondWad = decodeFunctionResult({
 			abi: cometAbi,
 			functionName: 'getSupplyRate',
 			data: bytesToHex(rateResult.data),
 		}) as bigint
 
-		// convert to annual rate
 		const annualRateWad = supplyRatePerSecondWad * SECONDS_PER_YEAR
-
-		// convert WAD → RAY
 		const annualRateRay = annualRateWad * WAD_TO_RAY_MULTIPLIER
 
 		runtime.log(
@@ -252,14 +334,14 @@ const readCompoundAPRRay = (
 		return annualRateRay
 	} catch (error) {
 		runtime.log(
-			`Compound adapter fallback [${evmCfg.chainName}] failed: ${
+			`Compound adapter fallback [${evmCfg.chainName}] primary call failed: ${
 				error instanceof Error ? error.message : String(error)
 			}`,
 		)
 
 		if (evmCfg.manualAPRRay) {
 			const aprRay = BigInt(evmCfg.manualAPRRay)
-			runtime.log(`Using manualAPRRay fallback=${aprRay}`)
+			runtime.log(`Compound adapter fallback [${evmCfg.chainName}] using manualAPRRay=${aprRay}`)
 			return aprRay
 		}
 
@@ -267,16 +349,12 @@ const readCompoundAPRRay = (
 	}
 }
 
-const readMorphoAPRRay = (
-	runtime: Runtime<Config>,
-	evmCfg: EVMConfig,
-): bigint => {
+const readMorphoAPRRay = (runtime: Runtime<Config>, evmCfg: EVMConfig): bigint => {
 	if (!evmCfg.manualAPRRay) {
 		throw new Error(
 			`Morpho adapter requires manualAPRRay for now (chain ${evmCfg.chainName}). Provide it in config until Morpho onchain rate ABI is integrated.`,
 		)
 	}
-
 	const aprRay = BigInt(evmCfg.manualAPRRay)
 	runtime.log(`Morpho fallback APR [${evmCfg.chainName}] from config manualAPRRay=${aprRay}`)
 	return aprRay
@@ -320,51 +398,36 @@ const readBalanceInPool = (
 			functionName: 'balanceOf',
 			args: [evmCfg.protocolSmartWalletAddress as Hex],
 		})
-
 		const callResult = evmClient
 			.callContract(runtime, {
-				call: encodeCallMsg({
-					from: zeroAddress,
-					to: evmCfg.poolAddress as Address,
-					data: callData,
-				}),
+				call: encodeCallMsg({ from: zeroAddress, to: evmCfg.poolAddress as Address, data: callData }),
 				blockNumber: LATEST_BLOCK_NUMBER,
 			})
 			.result()
-
-		const decoded = decodeFunctionResult({
+		return decodeFunctionResult({
 			abi,
 			functionName: 'balanceOf',
 			data: bytesToHex(callResult.data),
-		})
-
-		return decoded as bigint
+		}) as bigint
 	}
 
-	// Aave V3 balance read - get aToken address first
+	// Aave V3 — get aToken address first, then balanceOf
 	const reserveCall = encodeFunctionData({
 		abi: MockPool,
 		functionName: 'getReserveData',
 		args: [evmCfg.assetAddress as Hex],
 	})
-
 	const reserveResult = evmClient
 		.callContract(runtime, {
-			call: encodeCallMsg({
-				from: zeroAddress,
-				to: evmCfg.poolAddress as Address,
-				data: reserveCall,
-			}),
+			call: encodeCallMsg({ from: zeroAddress, to: evmCfg.poolAddress as Address, data: reserveCall }),
 			blockNumber: LATEST_BLOCK_NUMBER,
 		})
 		.result()
-
 	const reserveData = decodeFunctionResult({
 		abi: MockPool,
 		functionName: 'getReserveData',
 		data: bytesToHex(reserveResult.data),
 	})
-
 	const aToken = reserveData.aTokenAddress
 
 	const erc20Abi = [
@@ -382,37 +445,25 @@ const readBalanceInPool = (
 		functionName: 'balanceOf',
 		args: [evmCfg.protocolSmartWalletAddress as Hex],
 	})
-
 	const balanceResult = evmClient
 		.callContract(runtime, {
-			call: encodeCallMsg({
-				from: zeroAddress,
-				to: aToken as Address,
-				data: callData,
-			}),
+			call: encodeCallMsg({ from: zeroAddress, to: aToken as Address, data: callData }),
 			blockNumber: LATEST_BLOCK_NUMBER,
 		})
 		.result()
-
-	const balance = decodeFunctionResult({
+	return decodeFunctionResult({
 		abi: erc20Abi,
 		functionName: 'balanceOf',
 		data: bytesToHex(balanceResult.data),
-	})
-
-	return balance as bigint
+	}) as bigint
 }
 
-const buildPoolForChain = (
-	runtime: Runtime<Config>,
-	evmCfg: EVMConfig,
-): Pool => {
+const buildPoolForChain = (runtime: Runtime<Config>, evmCfg: EVMConfig): Pool => {
 	runtime.log(
 		`Reading APY for protocol ${evmCfg.protocol} on chain ${evmCfg.chainName} | pool ${evmCfg.poolAddress} | asset ${evmCfg.assetAddress}`,
 	)
 
 	const evmClient = getEvmClientForChain(evmCfg)
-
 	const currentLiquidityRate = readAPRRayForProtocol(runtime, evmCfg, evmClient)
 	runtime.log(`APR in RAY [${evmCfg.chainName}/${evmCfg.protocol}]: ${currentLiquidityRate}`)
 
@@ -435,19 +486,6 @@ const buildPoolForChain = (
 	}
 }
 
-const findBestPool = (pools: Pool[], log: (m: string) => void): Pool => {
-	let best: Pool | null = null
-	for (const p of pools) {
-		if (!best || p.APR > best.APR) {
-			best = p
-		} else if (p.APR === best.APR) {
-			log(`Found tie in APY between ${best.chainName}/${best.protocol} and ${p.chainName}/${p.protocol}, keeping existing best.`)
-		}
-	}
-	if (!best || best.APR <= 0n) throw new Error('Best APY unset or <= 0')
-	return best
-}
-
 const scorePoolForVerifiedHumans = (
 	pool: Pool,
 	humanConsensusCount: number,
@@ -464,13 +502,7 @@ const scorePoolForVerifiedHumans = (
 		`Human boost [${pool.chainName}/${pool.protocol}] baseAPY%=${(pool.APY * 100).toFixed(4)} verifiedBoostBps=${verifiedBoostBps} consensusCount=${humanConsensusCount} consensusBoostBps=${consensusBoostBps} effectiveAPY%=${(effectiveAPY * 100).toFixed(4)}`,
 	)
 
-	return {
-		...pool,
-		humanConsensusCount,
-		verifiedBoostBps,
-		consensusBoostBps,
-		effectiveAPY,
-	}
+	return { ...pool, humanConsensusCount, verifiedBoostBps, consensusBoostBps, effectiveAPY }
 }
 
 const findBestScoredPool = (pools: ScoredPool[], log: (m: string) => void): ScoredPool => {
@@ -489,14 +521,8 @@ const findBestScoredPool = (pools: ScoredPool[], log: (m: string) => void): Scor
 }
 
 const getChainSelectorFor = (chainName: string): bigint => {
-	const network = getNetwork({
-		chainFamily: 'evm',
-		chainSelectorName: chainName,
-		isTestnet: true,
-	})
-	if (!network) {
-		throw new Error(`Could not find network for chain ${chainName}`)
-	}
+	const network = getNetwork({ chainFamily: 'evm', chainSelectorName: chainName, isTestnet: true })
+	if (!network) throw new Error(`Could not find network for chain ${chainName}`)
 	return network.chainSelector.selector
 }
 
@@ -514,11 +540,7 @@ const readHumanConsensusCount = (
 	}
 
 	const consensusChain = config.person1Contracts.humanConsensusChainName ?? evmCfg.chainName
-	const network = getNetwork({
-		chainFamily: 'evm',
-		chainSelectorName: consensusChain,
-		isTestnet: true,
-	})
+	const network = getNetwork({ chainFamily: 'evm', chainSelectorName: consensusChain, isTestnet: true })
 
 	if (!network) {
 		runtime.log(
@@ -534,7 +556,6 @@ const readHumanConsensusCount = (
 			functionName: 'getHumanCount',
 			args: [evmCfg.humanPoolId],
 		})
-
 		const callResult = evmClient
 			.callContract(runtime, {
 				call: encodeCallMsg({
@@ -545,7 +566,6 @@ const readHumanConsensusCount = (
 				blockNumber: LATEST_BLOCK_NUMBER,
 			})
 			.result()
-
 		const decoded = decodeFunctionResult({
 			abi: HumanConsensus,
 			functionName: 'getHumanCount',
@@ -559,20 +579,12 @@ const readHumanConsensusCount = (
 		return Number.isFinite(count) ? count : fallbackCount
 	} catch (error) {
 		runtime.log(
-			`HumanConsensus fallback [${evmCfg.chainName}/${evmCfg.protocol}] onchain read failed: ${error instanceof Error ? error.message : String(error)}. Using configured count=${fallbackCount}`,
+			`HumanConsensus fallback [${evmCfg.chainName}/${evmCfg.protocol}] onchain read failed: ${
+				error instanceof Error ? error.message : String(error)
+			}. Using configured count=${fallbackCount}`,
 		)
 		return fallbackCount
 	}
-}
-
-const shouldRebalance = (
-	maxAPR: bigint,
-	curAPR: bigint,
-	minBpsDelta: number,
-): { ok: boolean; diffBps: bigint } => {
-	const diff = maxAPR - curAPR
-	const diffBps = aprDiffToBps(diff)
-	return { ok: diffBps >= BigInt(minBpsDelta), diffBps }
 }
 
 const shouldRebalanceByEffectiveAPY = (
@@ -594,8 +606,10 @@ const performRebalance = (
 	const evmClient = getEvmClientForChain(evmCfg)
 
 	const reportData = encodeAbiParameters(
-		parseAbiParameters("address asset, uint256 amount, uint64 destinationChainSelector, address destinationProtocolSmartWallet"),
-		[evmCfg.assetAddress as Hex, amount, bestChainSelector, bestProtocolSmartWallet as Hex]
+		parseAbiParameters(
+			'address asset, uint256 amount, uint64 destinationChainSelector, address destinationProtocolSmartWallet',
+		),
+		[evmCfg.assetAddress as Hex, amount, bestChainSelector, bestProtocolSmartWallet as Hex],
 	)
 
 	const reportResponse = runtime
@@ -611,9 +625,7 @@ const performRebalance = (
 		.writeReport(runtime, {
 			receiver: evmCfg.protocolSmartWalletAddress,
 			report: reportResponse,
-			gasConfig: {
-				gasLimit: evmCfg.gasLimit,
-			},
+			gasConfig: { gasLimit: evmCfg.gasLimit },
 		})
 		.result()
 
@@ -639,34 +651,64 @@ const doHighestSupplyAPY = (runtime: Runtime<Config>): string => {
 		throw new Error('At least two EVM configurations are required to compare supply APYs')
 	}
 
-	runtime.log('Reading supply APYs...')
+	// ===== STEP 1: Chainlink Data Feeds — Market Guard =====
+	// Check ETH/USD price and USDC peg BEFORE doing any pool reads or rebalancing.
+	// If market is unstable (USDC depeg or stale oracle), abort immediately to protect funds.
+	const market = checkMarketGuard(runtime)
 
-	// 1) Build pool snapshots for all chains
+	if (!market.isStable) {
+		const reason = market.staleness
+			? 'stale_oracle'
+			: `usdc_depeg_${market.usdcUsd.toFixed(4)}`
+
+		runtime.log(
+			`⚠️ MarketGuard BLOCKED rebalance | reason=${reason} | ETH=$${market.ethUsd.toFixed(2)} | USDC=$${market.usdcUsd.toFixed(4)}`,
+		)
+
+		return JSON.stringify({
+			timestamp: new Date().toISOString(),
+			rebalanceBlocked: true,
+			reason,
+			marketGuard: {
+				ethUsd: market.ethUsd,
+				usdcUsd: market.usdcUsd,
+				isStable: market.isStable,
+				staleness: market.staleness,
+				checkedAt: new Date().toISOString(),
+			},
+			person1Contracts: config.person1Contracts,
+		})
+	}
+
+	runtime.log(
+		`✅ MarketGuard passed | ETH=$${market.ethUsd.toFixed(2)} | USDC=$${market.usdcUsd.toFixed(4)} — proceeding with rebalance`,
+	)
+
+	// ===== STEP 2: Read APYs from all pools =====
+	runtime.log('Reading supply APYs...')
 	const pools: Pool[] = config.evms.map((e) => buildPoolForChain(runtime, e))
+
+	// ===== STEP 3: Score pools with World ID human boost =====
 	const scoredPools: ScoredPool[] = pools.map((pool) => {
 		const evmCfg = config.evms.find(
 			(e) => e.chainName === pool.chainName && e.protocol === pool.protocol,
 		)
-		if (!evmCfg) {
-			throw new Error(`EVM config not found for pool ${pool.chainName}/${pool.protocol}`)
-		}
+		if (!evmCfg) throw new Error(`EVM config not found for pool ${pool.chainName}/${pool.protocol}`)
 		const humanConsensusCount = readHumanConsensusCount(runtime, config, evmCfg)
 		return scorePoolForVerifiedHumans(pool, humanConsensusCount, config, runtime)
 	})
 
-	// 2) Find best pool by effective APY (base APY + verified boost + consensus boost)
+	// ===== STEP 4: Find best pool by effective APY =====
 	const bestPool = findBestScoredPool(scoredPools, runtime.log)
 	runtime.log(
 		`Found best effective APY: ${(bestPool.effectiveAPY * 100).toFixed(6)}% on chain ${bestPool.chainName} protocol ${bestPool.protocol}`,
 	)
 
 	const bestChainSelector = getChainSelectorFor(bestPool.chainName)
-
-	// Track new balance and amount rebalanced after rebalances
 	let newBestBalance = bestPool.balance
 	let totalRebalancedAmount = 0n
 
-	// 3) Rebalance from suboptimal pools
+	// ===== STEP 5: Rebalance from suboptimal pools via CCIP =====
 	for (const evmCfg of config.evms) {
 		if (evmCfg.chainName === bestPool.chainName) continue
 
@@ -704,13 +746,7 @@ const doHighestSupplyAPY = (runtime: Runtime<Config>): string => {
 			`Rebalancing supply from ${evmCfg.chainName} to ${bestPool.chainName} | balance=${balance}`,
 		)
 
-		performRebalance(
-			runtime,
-			evmCfg,
-			balance,
-			bestChainSelector,
-			bestPool.protocolSmartWalletAddress,
-		)
+		performRebalance(runtime, evmCfg, balance, bestChainSelector, bestPool.protocolSmartWalletAddress)
 
 		newBestBalance += balance
 		totalRebalancedAmount += balance
@@ -720,6 +756,7 @@ const doHighestSupplyAPY = (runtime: Runtime<Config>): string => {
 		`Rebalancing complete | Old balance: ${bestPool.balance} | New balance: ${newBestBalance} | Amount rebalanced: ${totalRebalancedAmount} | Chain: ${bestPool.chainName}`,
 	)
 
+	// ===== Final output =====
 	return JSON.stringify({
 		timestamp: new Date().toISOString(),
 		bestPool: {
@@ -753,6 +790,12 @@ const doHighestSupplyAPY = (runtime: Runtime<Config>): string => {
 			minBPSDeltaForRebalance: config.minBPSDeltaForRebalance,
 		},
 		humanBoost: config.humanBoost,
+		marketGuard: {
+			ethUsd: market.ethUsd,
+			usdcUsd: market.usdcUsd,
+			isStable: market.isStable,
+			checkedAt: new Date().toISOString(),
+		},
 		person1Contracts: config.person1Contracts,
 	})
 }
@@ -771,9 +814,7 @@ const initWorkflow = (config: Config) => {
 	const cron = new cre.capabilities.CronCapability()
 	return [
 		cre.handler(
-			cron.trigger({
-				schedule: config.schedule,
-			}),
+			cron.trigger({ schedule: config.schedule }),
 			onCronTrigger,
 		),
 	]
