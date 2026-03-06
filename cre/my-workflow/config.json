@@ -14,14 +14,15 @@
   },
   "evms": [
     {
-      "protocol": "aave-v3",
-      "assetAddress": "0x036CbD53842c5426634e7929541ec2318F3dCf7e",
-      "poolAddress": "0x07eA79F68B2B3df564D0A34F8e19D9B1e339814B",
+      "protocol": "morpho-vault",
+      "assetAddress": "0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8",
+      "poolAddress": "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951",
       "protocolSmartWalletAddress": "0xA08c284a0Ade4867cbdcf8090245FD520F8778c6",
-      "chainName": "ethereum-testnet-sepolia-base-1",
+      "chainName": "ethereum-testnet-sepolia",
       "gasLimit": "1000000",
-      "humanPoolId": "aave-base-sepolia-usdc",
-      "humanConsensusCount": 847
+      "humanPoolId": "morpho-sepolia-usdc",
+      "humanConsensusCount": 847,
+      "manualAPRRay": "35000000000000000000000000"
     },
     {
       "protocol": "compound-v3",
