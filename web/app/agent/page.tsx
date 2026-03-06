@@ -65,7 +65,7 @@ export default function AgentPage() {
     {
       role: "assistant",
       content:
-        "Hello. I'm the VeraYield AI Agent. I fetch real-time APY data from Aave v3 and Compound v3 on-chain via viem, then apply the WorldYield human verification boost to give you the best effective yield. Ask me anything about your yield opportunities.",
+        "Hello. I'm the WorldYield AI Agent. I fetch real-time APY data from chainlink data feeds within cre, Aave v3 and Compound v3 on-chain via viem, then apply the WorldYield human verification boost to give you the best effective yield. Ask me anything about your yield opportunities.",
     },
   ])
   const [input, setInput] = useState("")
