@@ -1,7 +1,7 @@
 /**
  * CRE Client for Mastra Agent Integration
  *
- * Mirrors the full CRE workflow from main.ts but runs outside CRE runtime using viem.
+ *
  * Runs the complete pipeline:
  *   STEP 1 → Chainlink Data Feeds market guard (ETH/USD + USDC/USD)
  *   STEP 2 → Read live APYs from Aave + Compound across chains
@@ -13,7 +13,7 @@
 import { type Address, type Hex, createPublicClient, http } from 'viem'
 import { sepolia, baseSepolia } from 'viem/chains'
 import { MockPool } from './abi/MockPool'
-import { HumanConsensus } from './abi/HumanConsensus'
+
 
 // ===== Constants =====
 
@@ -376,6 +376,7 @@ export async function getYieldRecommendation(config: {
 }): Promise<YieldVerdict> {
 	const log = (msg: string) => console.log(`[CRE Client] ${msg}`)
 	const timestamp = new Date().toISOString()
+
 	// ===== STEP 1: Chainlink Data Feeds — Market Guard =====
 	const market = await checkMarketGuard(log)
 
