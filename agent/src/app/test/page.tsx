@@ -1,31 +1,37 @@
 'use client';
 
 import { useState } from 'react';
+import { queryAiWithPayment } from '@/lib/useAiQuery';
 
 export default function TestPage() {
   const [message, setMessage] = useState('');
   const [response, setResponse] = useState('');
   const [loading, setLoading] = useState(false);
+  const [paid, setPaid] = useState(false);
+  const [txUrl, setTxUrl] = useState('');
+  const [txHash, setTxHash] = useState('');
 
   const testAgent = async () => {
     setLoading(true);
     setResponse('');
+    setPaid(false);
+    setTxUrl('');
+    setTxHash('');
     
     try {
-      const res = await fetch('/api/test-agent', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ message }),
-      });
-
-      const data = await res.json();
+      const data = await queryAiWithPayment(message);
       
       if (data.success) {
         setResponse(data.response || JSON.stringify(data, null, 2));
+        setPaid(true);
+        if (data.paymentInfo?.txUrl) {
+          setTxUrl(data.paymentInfo.txUrl);
+        }
+        if (data.paymentInfo?.txHash) {
+          setTxHash(data.paymentInfo.txHash);
+        }
       } else {
-        setResponse(`Error: ${data.error || JSON.stringify(data)}`);
+        setResponse('Error: Query failed');
       }
     } catch (error) {
       setResponse(`Failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -82,8 +88,24 @@ export default function TestPage() {
             disabled={loading || !message}
             className="w-full bg-blue-600 text-white py-3 px-4 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 font-medium transition-colors"
           >
-            {loading ? 'Analyzing with CRE...' : 'Get Yield Recommendation'}
+            {loading ? 'Processing x402 payment + analyzing...' : 'Get Yield Recommendation (x402 Payment enabled)'}
           </button>
+
+          {paid && (
+            <div className="text-sm text-green-700">
+              <p>Payment verified on Base Sepolia. AI query unlocked.</p>
+              {txUrl && (
+                <a
+                  href={txUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  View on-chain tx{txHash ? ` (${txHash.slice(0, 10)}...)` : ''}
+                </a>
+              )}
+            </div>
+          )}
 
           {response && (
             <div className="mt-6">
@@ -99,7 +121,7 @@ export default function TestPage() {
 
         <div className="mt-8 pt-6 border-t border-gray-200">
           <p className="text-xs text-gray-500">
-            <strong>Note:</strong> This agent uses real blockchain data via Chainlink Runtime Environment (CRE) to fetch APY from Aave v3 (Sepolia) and Compound v3 (Base Sepolia).
+            <strong>Note:</strong> Each query is gated by x402 and charges $0.01 USDC on Base Sepolia before calling the agent.
           </p>
         </div>
       </div>
