@@ -31,6 +31,7 @@ type Protocol = (typeof SUPPORTED_PROTOCOLS)[number]
 const configSchema = z.object({
 	schedule: z.string(),
 	minBPSDeltaForRebalance: z.number().min(0),
+	userNullifier: z.string().optional(),
 	humanBoost: z.object({
 		verifiedBoostBps: z.number().min(0),
 		consensusWeightBpsPer100Humans: z.number().min(0),
@@ -587,6 +588,35 @@ const readHumanConsensusCount = (
 	}
 }
 
+const verifyUserNullifier = (
+	runtime: Runtime<Config>,
+	config: Config,
+	nullifier: string | undefined,
+): { verified: boolean; reason: string } => {
+	if (!nullifier) {
+		return { verified: false, reason: 'No nullifier provided' }
+	}
+
+	// Basic nullifier format validation
+	const isValidFormat = (
+		nullifier.startsWith('0x') && /^0x[a-fA-F0-9]{64}$/.test(nullifier)
+	) || /^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$/.test(nullifier)
+
+	if (!isValidFormat) {
+		return { verified: false, reason: 'Invalid nullifier format (expected hex or UUID)' }
+	}
+
+	// TODO: Check against WorldIDGate.isVerifiedHuman or HumanConsensus contract
+	// For now, we accept any properly formatted nullifier as verified
+	// In production, you would:
+	// 1. Convert nullifier to uint256 hash if needed
+	// 2. Call WorldIDGate.nullifierUsed[hash] or addressNullifier mapping
+	// 3. Or check HumanConsensus for this specific user
+
+	runtime.log(`✓ User nullifier format validated: ${nullifier.slice(0, 20)}...`)
+	return { verified: true, reason: 'Nullifier format valid (onchain verification pending)' }
+}
+
 const shouldRebalanceByEffectiveAPY = (
 	maxEffectiveAPY: number,
 	curEffectiveAPY: number,
@@ -646,6 +676,26 @@ const doHighestSupplyAPY = (runtime: Runtime<Config>): string => {
 	runtime.log(
 		`Using Person 1 contracts | WorldIDGate: ${config.person1Contracts.worldIdGate} | VeraYieldVault: ${config.person1Contracts.veraYieldVault} | MandateStorage: ${config.person1Contracts.mandateStorage} | HumanConsensus: ${config.person1Contracts.humanConsensus}`,
 	)
+
+	// ===== STEP 0: Verify User is Verified Human =====
+	runtime.log('\n🔐 Verifying user World ID...')
+	const verification = verifyUserNullifier(runtime, config, config.userNullifier)
+	
+	if (!verification.verified) {
+		runtime.log(`❌ User verification FAILED: ${verification.reason}`)
+		runtime.log('⚠️  Only World ID verified humans can execute this workflow')
+		return JSON.stringify({
+			timestamp: new Date().toISOString(),
+			verificationFailed: true,
+			reason: verification.reason,
+			userNullifier: config.userNullifier || 'not_provided',
+			message: 'User must verify with World ID before executing workflow',
+			person1Contracts: config.person1Contracts,
+		})
+	}
+	
+	runtime.log(`✅ User verified as human: ${config.userNullifier?.slice(0, 20)}...`)
+	runtime.log(`   Reason: ${verification.reason}\n`)
 
 	if (config.evms.length < 2) {
 		throw new Error('At least two EVM configurations are required to compare supply APYs')

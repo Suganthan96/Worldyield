@@ -22,8 +22,18 @@ export function WorldIDButton({ onVerified }: WorldIDButtonProps = {}) {
   const [mounted, setMounted] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
+  const STORAGE_KEY = 'worldyield_worldid_nullifier'
+
   useEffect(() => {
     setMounted(true)
+    // Load from localStorage on mount
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem(STORAGE_KEY)
+      if (stored) {
+        console.log('[WorldID] Loaded from localStorage:', stored)
+        setNullifier(stored)
+      }
+    }
     return () => { abortRef.current?.abort() }
   }, [])
 
@@ -70,7 +80,27 @@ export function WorldIDButton({ onVerified }: WorldIDButtonProps = {}) {
       const data = await res.json()
       if (!data.success) throw new Error(data.error ?? "Backend rejected proof")
 
-      setNullifier((completion.result as { nullifier_hash?: string }).nullifier_hash ?? signal)
+      const nullifierHash = (completion.result as { nullifier_hash?: string }).nullifier_hash ?? signal
+      
+      // Store in localStorage
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(STORAGE_KEY, nullifierHash)
+        console.log('[WorldID] Saved to localStorage:', nullifierHash)
+      }
+      
+      // Store on server (cookie)
+      try {
+        await fetch('/api/worldid', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nullifier: nullifierHash })
+        })
+        console.log('[WorldID] Saved to server')
+      } catch (err) {
+        console.error('[WorldID] Failed to save to server:', err)
+      }
+      
+      setNullifier(nullifierHash)
       setStep("idle")
       setQrUri(null)
       onVerified?.()
@@ -86,6 +116,18 @@ export function WorldIDButton({ onVerified }: WorldIDButtonProps = {}) {
     setStep("idle")
     setQrUri(null)
     setError(null)
+  }
+
+  function clearVerification() {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(STORAGE_KEY)
+      console.log('[WorldID] Cleared verification')
+    }
+    // Clear from server
+    fetch('/api/worldid', { method: 'DELETE' }).catch(err => 
+      console.error('[WorldID] Failed to clear from server:', err)
+    )
+    setNullifier(null)
   }
 
   const showModal = (step === "qr" && qrUri) || step === "waiting" || step === "error"
@@ -172,12 +214,33 @@ export function WorldIDButton({ onVerified }: WorldIDButtonProps = {}) {
 
   if (nullifier) {
     return (
-      <div className="inline-flex items-center gap-3 border border-green-500/40 px-6 py-3 font-mono text-xs uppercase tracking-widest text-green-400">
-        <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-        Verified Human
-        <span className="text-green-500/40 normal-case truncate max-w-[120px]">
-          {nullifier.slice(0, 10)}…
-        </span>
+      <div className="flex flex-col gap-3">
+        <div className="inline-flex items-center gap-3 border border-green-500/40 px-6 py-3 font-mono text-xs uppercase tracking-widest text-green-400">
+          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+          Verified Human
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(nullifier)
+              console.log('[WorldID] Copied to clipboard')
+            }}
+            className="text-green-500/60 hover:text-green-400 normal-case truncate max-w-[120px] transition-colors"
+            title="Click to copy full ID"
+          >
+            {nullifier.slice(0, 10)}…
+          </button>
+        </div>
+        <div className="bg-background/50 border border-foreground/10 p-4 font-mono text-[10px] max-w-md">
+          <p className="text-muted-foreground uppercase tracking-widest mb-2">World ID Nullifier:</p>
+          <p className="text-foreground/80 break-all select-all leading-relaxed cursor-text">
+            {nullifier}
+          </p>
+          <button
+            onClick={clearVerification}
+            className="mt-3 text-red-400/60 hover:text-red-400 uppercase tracking-widest text-[9px] underline transition-colors"
+          >
+            Clear & Re-verify
+          </button>
+        </div>
       </div>
     )
   }

@@ -1,6 +1,7 @@
 {
   "schedule": "0 */5 * * * *",
   "minBPSDeltaForRebalance": 50,
+  "userNullifier": "bb43e9ee-b4f1-4001-bccc-625563af948f",
   "humanBoost": {
     "verifiedBoostBps": 140,
     "consensusWeightBpsPer100Humans": 6
