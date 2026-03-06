@@ -66,14 +66,13 @@ export function HeroSection() {
           </div>
         </SplitFlapAudioProvider>
 
-        <h2 className="font-[var(--font-bebas)] text-muted-foreground/60 text-[clamp(1rem,3vw,2rem)] mt-4 tracking-wide">
+        <h2 className="font-[var(--font-bebas)] text-muted-foreground/80 text-[clamp(1rem,3vw,2rem)] mt-4 tracking-wide">
           Yield for Verified Humans
         </h2>
 
-        <p className="mt-12 max-w-md font-mono text-sm text-muted-foreground leading-relaxed">
-          Pool USDC with other World ID verified humans. Our AI agent allocates across the highest-yield DeFi protocols — cross-chain, autonomously, on-chain.
+        <p className="mt-10 max-w-md font- text-bold text-muted-foreground leading-relaxed">
+        Deposit funds with verified humans. Our CRE agent reads live yields from Aave and Compound, validates market conditions via Chainlink Data Feeds, and rebalances cross-chain via CCIP autonomously, onchain.
         </p>
-
         <div className="mt-16 flex items-center gap-8">
           <WorldIDButton onVerified={() => setVerified(true)} />
           {verified ? (

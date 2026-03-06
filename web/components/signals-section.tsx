@@ -26,7 +26,7 @@ const signals = [
   {
     date: "2026.01.28",
     title: "Vault v2",
-    note: "VeraYieldVault upgraded with multi-chain routing. Single deposit, multi-protocol yield harvesting across EVM chains.",
+    note: "WorldYieldVault upgraded with multi-chain routing. Single deposit, multi-protocol yield harvesting across EVM chains.",
   },
   {
     date: "2026.01.10",

@@ -11,7 +11,7 @@ const experiments = [
   {
     title: "VeraYield Vault",
     medium: "Smart Contract",
-    description: "Core yield vault on World Chain. Accepts USDC from verified humans and routes capital to the highest-yield DeFi protocols cross-chain.",
+    description: "Core yield vault on World Chain. Accepts funds from verified humans and routes capital to the highest-yield DeFi protocols cross-chain.",
     span: "col-span-2 row-span-2",
   },
   {
