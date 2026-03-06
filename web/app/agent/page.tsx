@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react"
 import { TopNav } from "@/components/top-nav"
 import { AnimatedNoise } from "@/components/animated-noise"
+import { queryAiWithPayment } from "@/lib/useAiQuery"
 
 const QUICK_QUERIES = [
   "What's the best yield option right now?",
@@ -15,6 +16,8 @@ type Message = {
   role: "user" | "assistant"
   content: string
   toolCalls?: number
+  txHash?: string
+  txUrl?: string
 }
 
 const agentStats = [
@@ -82,21 +85,26 @@ export default function AgentPage() {
     setMessages((prev) => [...prev, { role: "user", content: msg }])
     setLoading(true)
     try {
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg }),
-      })
-      const data = await res.json()
+      const data = await queryAiWithPayment(msg)
+      
       if (data.success) {
-        setMessages((prev) => [...prev, { role: "assistant", content: data.response, toolCalls: data.toolCalls }])
+        setMessages((prev) => [
+          ...prev, 
+          { 
+            role: "assistant", 
+            content: data.response, 
+            toolCalls: data.toolCalls,
+            txHash: data.paymentInfo?.txHash,
+            txUrl: data.paymentInfo?.txUrl,
+          }
+        ])
       } else {
-        setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${data.error || "Unknown error"}` }])
-        setError(data.error || "Agent returned an error.")
+        setMessages((prev) => [...prev, { role: "assistant", content: "Error: Agent query failed" }])
+        setError("Agent returned an error.")
       }
-    } catch {
-      setMessages((prev) => [...prev, { role: "assistant", content: "Agent server is offline. Start it with: cd agent && npm run dev" }])
-      setError("Could not reach the agent. Make sure it's running on port 3001.")
+    } catch (err) {
+      setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${err instanceof Error ? err.message : "Failed to query agent"}` }])
+      setError("Failed to process query. Check console for details.")
     } finally {
       setLoading(false)
     }
@@ -157,6 +165,19 @@ export default function AgentPage() {
                       </p>
                     )}
                     {m.content}
+                    {m.txUrl && (
+                      <p className="text-[9px] text-emerald-400/90 mt-3 pt-3 border-t border-border/30">
+                        Payment verified on Base Sepolia. AI query unlocked.{" "}
+                        <a
+                          href={m.txUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline hover:text-emerald-300"
+                        >
+                          View on-chain tx{m.txHash ? ` (${m.txHash.slice(0, 10)}...)` : ''}
+                        </a>
+                      </p>
+                    )}
                   </div>
                 </div>
               ))}
@@ -209,7 +230,7 @@ export default function AgentPage() {
                 </button>
               </div>
               <p className="mt-2 font-mono text-[9px] text-muted-foreground/40 uppercase tracking-widest">
-                Enter to send · Shift+Enter for new line · Requires agent on :3001
+                Enter to send · Shift+Enter for new line · x402 Payment: $0.01 USDC on Base Sepolia
               </p>
             </div>
           </div>
