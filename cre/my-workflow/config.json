@@ -1,7 +1,7 @@
 {
   "schedule": "0 */5 * * * *",
   "minBPSDeltaForRebalance": 50,
-  "userNullifier": "bb43e9ee-b4f1-4001-bccc-625563af948f",
+  "userNullifier": "2ea9de72-b646-4eca-b512-2ee25b134af6",
   "humanBoost": {
     "verifiedBoostBps": 140,
     "consensusWeightBpsPer100Humans": 6
@@ -15,13 +15,13 @@
   },
   "evms": [
     {
-      "protocol": "morpho-vault",
+      "protocol": "aave-v3",
       "assetAddress": "0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8",
       "poolAddress": "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951",
       "protocolSmartWalletAddress": "0xA08c284a0Ade4867cbdcf8090245FD520F8778c6",
       "chainName": "ethereum-testnet-sepolia",
       "gasLimit": "1000000",
-      "humanPoolId": "morpho-sepolia-usdc",
+      "humanPoolId": "aave-base-usdc",
       "humanConsensusCount": 847,
       "manualAPRRay": "35000000000000000000000000"
     },
