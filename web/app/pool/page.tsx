@@ -15,7 +15,7 @@ import { baseSepolia } from "wagmi/chains"
 // Aave v3 Pool on Base Sepolia
 const AAVE_POOL_ADDRESS = "0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27" as const
 const USDC_ADDRESS = "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f" as const
-const ATOKEN_ADDRESS = "0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27" as const // Same as pool for aToken balance
+const ATOKEN_ADDRESS = "0x10F1A9D11CDf50041f3f8cB7191CBE2f31750ACC" as const // Same as pool for aToken balance
 
 // Simplified ABI for Aave Pool
 const AAVE_POOL_ABI = [
@@ -30,6 +30,17 @@ const AAVE_POOL_ABI = [
       { name: "referralCode", type: "uint16" },
     ],
     outputs: [],
+  },
+  {
+    name: "withdraw",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "asset", type: "address" },
+      { name: "amount", type: "uint256" },
+      { name: "to", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
   },
   {
     name: "getUserAccountData",
@@ -84,13 +95,15 @@ export default function PoolPage() {
   const { switchChain } = useSwitchChain()
   
   const [amount, setAmount] = useState("")
+  const [withdrawAmount, setWithdrawAmount] = useState("")
   const [error, setError] = useState("")
   const [needsApproval, setNeedsApproval] = useState(false)
   const [isSwitchingChain, setIsSwitchingChain] = useState(false)
-  const [completedTransactions, setCompletedTransactions] = useState<Array<{amount: string, hash: string, timestamp: number}>>([])
+  const [completedTransactions, setCompletedTransactions] = useState<Array<{type: 'supply' | 'withdraw', amount: string, hash: string, timestamp: number}>>([])
 
   const { writeContract: approve, data: approveHash, isPending: isApproving, error: approveError } = useWriteContract()
   const { writeContract: supply, data: supplyHash, isPending: isSupplying, error: supplyError } = useWriteContract()
+  const { writeContract: withdraw, data: withdrawHash, isPending: isWithdrawing, error: withdrawError } = useWriteContract()
   
   const { isLoading: isConfirmingApprove, isSuccess: isApproveConfirmed, isError: isApproveError } = useWaitForTransactionReceipt({
     hash: approveHash,
@@ -98,6 +111,10 @@ export default function PoolPage() {
   
   const { isLoading: isConfirmingSupply, isSuccess: isSupplyConfirmed, isError: isSupplyError } = useWaitForTransactionReceipt({
     hash: supplyHash,
+  })
+
+  const { isLoading: isConfirmingWithdraw, isSuccess: isWithdrawConfirmed, isError: isWithdrawError } = useWaitForTransactionReceipt({
+    hash: withdrawHash,
   })
 
   // Read USDC balance
@@ -116,9 +133,6 @@ export default function PoolPage() {
     functionName: "balanceOf",
     args: address ? [address] : undefined,
     chainId: baseSepolia.id,
-    query: {
-      refetchInterval: 2000, // Poll every 2 seconds
-    },
   })
 
   // Read allowance
@@ -130,7 +144,7 @@ export default function PoolPage() {
     chainId: baseSepolia.id,
   })
 
-  const loading = isApproving || isConfirmingApprove || isSupplying || isConfirmingSupply || isSwitchingChain
+  const loading = isApproving || isConfirmingApprove || isSupplying || isConfirmingSupply || isWithdrawing || isConfirmingWithdraw || isSwitchingChain
 
   const balanceFormatted = balance ? formatUnits(balance as bigint, 6) : "0"
   const suppliedFormatted = aTokenBalance ? formatUnits(aTokenBalance as bigint, 6) : "0"
@@ -147,6 +161,7 @@ export default function PoolPage() {
     if (isSupplyConfirmed && supplyHash && amount) {
       // Save completed transaction
       setCompletedTransactions(prev => [{
+        type: 'supply',
         amount,
         hash: supplyHash,
         timestamp: Date.now()
@@ -156,8 +171,32 @@ export default function PoolPage() {
       refetchBalance()
       refetchSupplied()
       refetchAllowance()
+      
+      // Additional refetches to ensure balance updates
+      setTimeout(() => refetchSupplied(), 2000)
+      setTimeout(() => refetchSupplied(), 4000)
     }
   }, [isSupplyConfirmed, supplyHash, refetchBalance, refetchSupplied, refetchAllowance, amount])
+
+  useEffect(() => {
+    if (isWithdrawConfirmed && withdrawHash && withdrawAmount) {
+      // Save completed withdrawal transaction
+      setCompletedTransactions(prev => [{
+        type: 'withdraw',
+        amount: withdrawAmount,
+        hash: withdrawHash,
+        timestamp: Date.now()
+      }, ...prev])
+      setWithdrawAmount("")
+      setError("")
+      refetchBalance()
+      refetchSupplied()
+      
+      // Additional refetches
+      setTimeout(() => refetchSupplied(), 2000)
+      setTimeout(() => refetchSupplied(), 4000)
+    }
+  }, [isWithdrawConfirmed, withdrawHash, refetchBalance, refetchSupplied, withdrawAmount])
 
   useEffect(() => {
     if (isApproveError || approveError) {
@@ -172,6 +211,13 @@ export default function PoolPage() {
       setError(supplyError?.message || supplyError?.name || "Supply transaction failed")
     }
   }, [isSupplyError, supplyError])
+
+  useEffect(() => {
+    if (isWithdrawError || withdrawError) {
+      console.error("Withdraw error:", withdrawError)
+      setError(withdrawError?.message || withdrawError?.name || "Withdraw transaction failed")
+    }
+  }, [isWithdrawError, withdrawError])
 
   useEffect(() => {
     if (amount) {
@@ -283,7 +329,56 @@ export default function PoolPage() {
     }
   }
 
-  const currentTxHash = approveHash || supplyHash
+  async function withdrawFromAave() {
+    if (!address || !withdrawAmount) {
+      console.log("Missing address or withdraw amount", { address, withdrawAmount })
+      return
+    }
+    setError("")
+    setIsSwitchingChain(false)
+
+    try {
+      // Check if on correct chain
+      if (chain?.id !== baseSepolia.id) {
+        console.log("Wrong chain, switching to Base Sepolia...")
+        setIsSwitchingChain(true)
+        await switchChain({ chainId: baseSepolia.id })
+        setIsSwitchingChain(false)
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
+
+      const amountBigInt = parseUnits(withdrawAmount, 6)
+      
+      // Verify sufficient aToken balance
+      if (aTokenBalance && (aTokenBalance as bigint) < amountBigInt) {
+        setError(`Insufficient supplied balance. You have ${suppliedFormatted} USDC supplied but trying to withdraw ${withdrawAmount} USDC`)
+        return
+      }
+
+      console.log("Withdrawing from Aave:", {
+        pool: AAVE_POOL_ADDRESS,
+        asset: USDC_ADDRESS,
+        amount: amountBigInt.toString(),
+        to: address,
+        aTokenBalance: aTokenBalance?.toString()
+      })
+      
+      withdraw({
+        address: AAVE_POOL_ADDRESS,
+        abi: AAVE_POOL_ABI,
+        functionName: "withdraw",
+        args: [USDC_ADDRESS, amountBigInt, address],
+        chainId: baseSepolia.id,
+        gas: BigInt(500000),
+      })
+    } catch (err: any) {
+      console.error("Withdraw error:", err)
+      setIsSwitchingChain(false)
+      setError(err.message || err.shortMessage || "Withdraw failed")
+    }
+  }
+
+  const currentTxHash = approveHash || supplyHash || withdrawHash
 
   return (
     <main className="relative min-h-screen bg-background">
@@ -437,7 +532,7 @@ export default function PoolPage() {
                     </Alert>
                   )}
 
-                  {currentTxHash && !isSupplyConfirmed && !isApproveConfirmed && (
+                  {currentTxHash && !isSupplyConfirmed && !isApproveConfirmed && !isWithdrawConfirmed && (
                     <Alert className="border-blue-400/40 bg-blue-400/10">
                       <AlertDescription className="font-mono text-xs text-blue-400">
                         ⏳ Transaction submitted! Waiting for confirmation...{" "}
@@ -456,7 +551,15 @@ export default function PoolPage() {
                   {isSupplyConfirmed && supplyHash && (
                     <Alert className="border-emerald-400/40 bg-emerald-400/10">
                       <AlertDescription className="font-mono text-xs text-emerald-400">
-                        ✓ Transaction confirmed! Your balance will update shortly.
+                        ✓ Supply confirmed! Your balance will update shortly.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {isWithdrawConfirmed && withdrawHash && (
+                    <Alert className="border-emerald-400/40 bg-emerald-400/10">
+                      <AlertDescription className="font-mono text-xs text-emerald-400">
+                        ✓ Withdrawal confirmed! Your balance will update shortly.
                       </AlertDescription>
                     </Alert>
                   )}
@@ -470,9 +573,11 @@ export default function PoolPage() {
                       {completedTransactions.slice(0, 3).map((tx, idx) => (
                         <div key={tx.hash} className="space-y-1">
                           <div className="flex items-center gap-2">
-                            <span className="text-emerald-400 text-base">✓</span>
-                            <span className="font-mono text-xs text-emerald-400 font-semibold">
-                              Successfully supplied {tx.amount} USDC
+                            <span className={tx.type === 'supply' ? "text-emerald-400 text-base" : "text-blue-400 text-base"}>
+                              {tx.type === 'supply' ? '✓' : '↓'}
+                            </span>
+                            <span className={`font-mono text-xs font-semibold ${tx.type === 'supply' ? 'text-emerald-400' : 'text-blue-400'}`}>
+                              {tx.type === 'supply' ? `Successfully supplied ${tx.amount} USDC` : `Successfully withdrew ${tx.amount} USDC`}
                             </span>
                           </div>
                           <div className="font-mono text-[10px] text-muted-foreground/80 ml-6">
@@ -481,13 +586,13 @@ export default function PoolPage() {
                               href={`https://sepolia.basescan.org/tx/${tx.hash}`}
                               target="_blank"
                               rel="noreferrer"
-                              className="text-emerald-400/80 underline hover:text-emerald-400"
+                              className={`underline ${tx.type === 'supply' ? 'text-emerald-400/80 hover:text-emerald-400' : 'text-blue-400/80 hover:text-blue-400'}`}
                             >
                               {tx.hash.slice(0, 10)}...{tx.hash.slice(-8)}
                             </a>
                           </div>
                           <div className="font-mono text-[10px] text-muted-foreground/60 ml-6">
-                            You received aUSDC tokens earning yield automatically
+                            {tx.type === 'supply' ? 'You received aUSDC tokens earning yield automatically' : 'USDC returned to your wallet'}
                           </div>
                           {idx < completedTransactions.slice(0, 3).length - 1 && (
                             <div className="border-t border-emerald-400/20 mt-2 pt-1" />
@@ -532,6 +637,50 @@ export default function PoolPage() {
                         {isSwitchingChain ? "Switching Chain..." : loading ? "Supplying..." : `Supply ${amount || "0"} USDC`}
                       </Button>
                     )}
+                  </div>
+
+                  {/* Withdraw Section */}
+                  <div className="border-t border-border/40 pt-6 space-y-4">
+                    <div>
+                      <label className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground mb-2 block">
+                        Amount to Withdraw (USDC)
+                      </label>
+                      <div className="flex gap-2">
+                        <Input
+                          type="number"
+                          value={withdrawAmount}
+                          onChange={(e) => setWithdrawAmount(e.target.value)}
+                          placeholder="0.00"
+                          className="font-mono bg-background border-border/60"
+                          disabled={loading}
+                        />
+                        <Button
+                          variant="outline"
+                          onClick={() => setWithdrawAmount(suppliedFormatted)}
+                          className="font-mono text-xs uppercase tracking-widest"
+                          disabled={loading}
+                        >
+                          Max
+                        </Button>
+                      </div>
+                    </div>
+
+                    {withdrawAmount && parseFloat(withdrawAmount) > 0 && (
+                      <Alert className="border-purple-400/40 bg-purple-400/10">
+                        <AlertDescription className="font-mono text-xs text-purple-400">
+                          💡 You will withdraw {withdrawAmount} USDC from Aave. Your aUSDC will be burned.
+                        </AlertDescription>
+                      </Alert>
+                    )}
+
+                    <Button
+                      onClick={withdrawFromAave}
+                      disabled={loading || !withdrawAmount || parseFloat(withdrawAmount) <= 0 || parseFloat(suppliedFormatted) <= 0}
+                      variant="outline"
+                      className="w-full font-mono text-xs uppercase tracking-widest border-purple-400/40 hover:bg-purple-400/10"
+                    >
+                      {isSwitchingChain ? "Switching Chain..." : loading ? "Withdrawing..." : `Withdraw ${withdrawAmount || "0"} USDC`}
+                    </Button>
                   </div>
                 </div>
 
