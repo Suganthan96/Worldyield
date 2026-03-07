@@ -3,12 +3,10 @@
  * 
  * Stores and retrieves the current user's World ID nullifier hash.
  * Used by CRE workflow to verify user is a verified human.
- * Automatically updates the CRE config.json file when a user verifies.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { updateCREConfigNullifier } from '@/lib/cre-config-updater'
 
 const COOKIE_NAME = 'worldyield_worldid_nullifier'
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30 // 30 days
@@ -84,20 +82,6 @@ export async function POST(req: NextRequest) {
     })
 
     console.log('[WorldID API] Stored nullifier:', nullifier.slice(0, 10) + '...')
-
-    // Update CRE config.json file with the new nullifier
-    try {
-      const updateResult = await updateCREConfigNullifier(nullifier)
-      if (updateResult.success) {
-        console.log('[WorldID API] ✓ CRE config updated:', updateResult.message)
-      } else {
-        console.warn('[WorldID API] ⚠ Failed to update CRE config:', updateResult.error)
-        // Don't fail the request, just log the warning
-      }
-    } catch (updateError) {
-      console.error('[WorldID API] ⚠ Error updating CRE config (non-fatal):', updateError)
-      // Continue even if CRE update fails
-    }
 
     return response
   } catch (error) {
