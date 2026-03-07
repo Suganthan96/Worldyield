@@ -1940,10 +1940,8 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 ##  Contact & Support
 
-- **GitHub**: [https://github.com/yourusername/worldyield](https://github.com/Suganthan96/Worldyield)
-- **Docs**: [Documentation site TBD]
-- **Discord**: [Community server TBD]
-- **Twitter**: [@worldyield](https://twitter.com/worldyield)
+- **GitHub**: [https://github.com/Suganthan96/Worldyield](https://github.com/Suganthan96/Worldyield)
+
 
 ---
 
@@ -1955,6 +1953,6 @@ Try WorldYield on testnets:
 
 ---
 
-**Built with  by the WorldYield Team**
+**Built with ❤️ by the WorldYield Team**
 
 *Empowering verified humans to maximize DeFi yields through AI and collective intelligence.*
