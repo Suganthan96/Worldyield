@@ -7,9 +7,9 @@ import { queryAiWithPayment } from "@/lib/useAiQuery"
 
 const QUICK_QUERIES = [
   "What's the best yield option right now?",
+  "Can you supply 100 USDC into Aave?",
+  "Should I withdraw from the pool?",
   "Compare APY across all protocols",
-  "How does human verification boost work?",
-  "Should I move my funds from Aave to Compound?",
 ]
 
 type Message = {
@@ -18,6 +18,11 @@ type Message = {
   toolCalls?: number
   txHash?: string
   txUrl?: string
+  actions?: Array<{
+    type: "supply" | "withdraw"
+    amount: string
+    reason: string
+  }>
 }
 
 const agentStats = [
@@ -71,6 +76,9 @@ export default function AgentPage() {
   const [input, setInput] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [privateKey, setPrivateKey] = useState("")
+  const [showKeyInput, setShowKeyInput] = useState(false)
+  const [executingAction, setExecutingAction] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -82,12 +90,16 @@ export default function AgentPage() {
     if (!msg || loading) return
     setInput("")
     setError(null)
-    setMessages((prev) => [...prev, { role: "user", content: msg }])
+    const userMessage = { role: "user" as const, content: msg }
+    setMessages((prev) => [...prev, userMessage])
     setLoading(true)
     try {
       const data = await queryAiWithPayment(msg)
       
       if (data.success) {
+        // Parse response for action suggestions, considering user's request
+        const actions = parseActionsFromResponse(data.response, msg)
+        
         setMessages((prev) => [
           ...prev, 
           { 
@@ -96,6 +108,7 @@ export default function AgentPage() {
             toolCalls: data.toolCalls,
             txHash: data.paymentInfo?.txHash,
             txUrl: data.paymentInfo?.txUrl,
+            actions,
           }
         ])
       } else {
@@ -107,6 +120,152 @@ export default function AgentPage() {
       setError("Failed to process query. Check console for details.")
     } finally {
       setLoading(false)
+    }
+  }
+
+  function parseActionsFromResponse(response: string, userQuery: string): Array<{type: "supply" | "withdraw", amount: string, reason: string}> | undefined {
+    // Detect if user is requesting supply/withdraw actions with protocol mention
+    const userWantsSupply = /(?:supply|deposit|add|invest).*?(?:into|to|in)\s+(?:aave|pool|the pool)/i.test(userQuery) || 
+                           /(?:can you|could you|please|help me|want to|need to|should i).*supply/i.test(userQuery)
+    const userWantsWithdraw = /(?:withdraw|remove|take out).*?(?:from|out of)\s+(?:aave|pool|the pool)/i.test(userQuery) ||
+                             /(?:can you|could you|please|help me|want to|need to|should i).*withdraw/i.test(userQuery)
+    
+    const actions: Array<{type: "supply" | "withdraw", amount: string, reason: string}> = []
+    
+    // Enhanced pattern matching for various agent response formats
+    // Matches: "supply 100 USDC", "supplying 100", "recommend supply of 100", "deposit 100 USDC", etc.
+    const supplyPatterns = [
+      /(?:supply|deposit|add|invest)\s+(\d+(?:\.\d+)?)\s*(?:USDC)?/i,
+      /(\d+(?:\.\d+)?)\s*USDC?\s+(?:to|into|in)\s+(?:aave|pool|supply)/i,
+      /recommend.*?supply.*?(\d+(?:\.\d+)?)/i,
+      /suggest.*?supply.*?(\d+(?:\.\d+)?)/i,
+    ]
+    
+    const withdrawPatterns = [
+      /(?:withdraw|remove|take out|pull)\s+(\d+(?:\.\d+)?)\s*(?:USDC)?/i,
+      /(\d+(?:\.\d+)?)\s*USDC?\s+(?:from|out of)\s+(?:aave|pool)/i,
+      /recommend.*?withdraw.*?(\d+(?:\.\d+)?)/i,
+      /suggest.*?withdraw.*?(\d+(?:\.\d+)?)/i,
+    ]
+    
+    // Check for supply actions
+    if (userWantsSupply) {
+      for (const pattern of supplyPatterns) {
+        const match = response.match(pattern)
+        if (match) {
+          actions.push({
+            type: "supply",
+            amount: match[1],
+            reason: "Recommended by AI agent based on your request"
+          })
+          break
+        }
+      }
+      
+      // If user asked for supply but no amount found, suggest a default
+      if (actions.length === 0) {
+        // Try to extract any number from the response as potential amount
+        const anyNumberMatch = response.match(/(\d+(?:\.\d+)?)/i)
+        if (anyNumberMatch) {
+          actions.push({
+            type: "supply",
+            amount: anyNumberMatch[1],
+            reason: "Suggested amount based on conversation"
+          })
+        }
+      }
+    }
+    
+    // Check for withdraw actions
+    if (userWantsWithdraw) {
+      for (const pattern of withdrawPatterns) {
+        const match = response.match(pattern)
+        if (match) {
+          actions.push({
+            type: "withdraw",
+            amount: match[1],
+            reason: "Recommended by AI agent based on your request"
+          })
+          break
+        }
+      }
+      
+      // If user asked for withdraw but no amount found
+      if (actions.length === 0 || !actions.some(a => a.type === "withdraw")) {
+        const anyNumberMatch = response.match(/(\d+(?:\.\d+)?)/i)
+        if (anyNumberMatch) {
+          actions.push({
+            type: "withdraw",
+            amount: anyNumberMatch[1],
+            reason: "Suggested amount based on conversation"
+          })
+        }
+      }
+    }
+    
+    return actions.length > 0 ? actions : undefined
+  }
+
+  async function executeAction(action: {type: "supply" | "withdraw", amount: string}) {
+    if (!privateKey) {
+      alert("Please set your private key first. Click the 'Set Private Key' button at the top.")
+      setShowKeyInput(true)
+      return
+    }
+
+    if (!privateKey.startsWith('0x')) {
+      alert("Private key must start with '0x'")
+      return
+    }
+
+    setExecutingAction(true)
+    setError(null)
+
+    try {
+      const response = await fetch("/api/pool/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          privateKey,
+          action: action.type,
+          amount: action.amount,
+        }),
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        const explorerUrl = `https://sepolia.basescan.org/tx/${data.txHash}`
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `✓ ${data.message}\n\nTransaction Hash: ${data.txHash}\nAddress: ${data.address}`,
+            txUrl: explorerUrl,
+          },
+        ])
+      } else {
+        setError(data.error || "Transaction failed")
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `✗ Transaction failed: ${data.error || "Unknown error"}\n${data.details || ''}`,
+          },
+        ])
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : "Unknown error"
+      setError(errorMsg)
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `✗ Failed to execute ${action.type}: ${errorMsg}`,
+        },
+      ])
+    } finally {
+      setExecutingAction(false)
     }
   }
 
@@ -123,24 +282,89 @@ export default function AgentPage() {
             <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">AI Yield Optimizer</p>
             <h1 className="font-[var(--font-bebas)] text-[clamp(1.4rem,3vw,2.2rem)] tracking-[0.1em] leading-none mt-0.5">AGENT</h1>
           </div>
-          <div className="hidden md:flex items-center gap-6">
-            {agentStats.map((s) => (
-              <div key={s.label} className="text-right">
-                <p className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground/60">{s.label}</p>
-                {s.badge ? (
-                  <span className="inline-flex items-center gap-1.5 font-mono text-xs text-emerald-400">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    {s.value}
-                  </span>
-                ) : (
-                  <span className="font-mono text-xs text-foreground">
-                    {s.value}<span className="text-muted-foreground ml-1">{s.unit}</span>
-                  </span>
-                )}
+          <div className="flex items-center gap-6">
+            <button
+              onClick={() => setShowKeyInput(!showKeyInput)}
+              className={`px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest border transition-colors ${
+                privateKey 
+                  ? "border-emerald-400/40 text-emerald-400 hover:bg-emerald-400/10"
+                  : "border-border/40 text-muted-foreground hover:border-accent hover:text-accent"
+              }`}
+            >
+              {privateKey ? "✓ Key Set" : "Set Private Key"}
+            </button>
+            <div className="hidden md:flex items-center gap-6">
+              {agentStats.map((s) => (
+                <div key={s.label} className="text-right">
+                  <p className="font-mono text-[9px] uppercase tracking-widest text-muted-foreground/60">{s.label}</p>
+                  {s.badge ? (
+                    <span className="inline-flex items-center gap-1.5 font-mono text-xs text-emerald-400">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      {s.value}
+                    </span>
+                  ) : (
+                    <span className="font-mono text-xs text-foreground">
+                      {s.value}<span className="text-muted-foreground ml-1">{s.unit}</span>
+                    </span>
+                  )}
               </div>
             ))}
           </div>
         </div>
+        </div>
+
+        {/* Private Key Input Section */}
+        {showKeyInput && (
+          <div className="border-b border-border/40 px-6 md:px-12 py-4 bg-accent/5 shrink-0">
+            <div className="max-w-2xl">
+              <div className="flex items-start gap-3 mb-3">
+                <div className="h-5 w-5 rounded-full bg-amber-400/20 flex items-center justify-center shrink-0 mt-0.5">
+                  <span className="text-amber-400 text-xs">⚠</span>
+                </div>
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-widest text-amber-400/90 mb-1">Security Warning</p>
+                  <p className="font-mono text-[10px] text-muted-foreground leading-relaxed">
+                    Your private key is used to automatically execute transactions. It will be stored in memory only and sent to the API endpoint. 
+                    Only use this with test accounts on testnet. Never share your private key.
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <input
+                  type="password"
+                  value={privateKey}
+                  onChange={(e) => setPrivateKey(e.target.value)}
+                  placeholder="0x..."
+                  className="flex-1 bg-background border border-border/40 px-4 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-accent/60 transition-colors"
+                />
+                <button
+                  onClick={() => {
+                    if (privateKey) {
+                      // Auto-add 0x prefix if missing
+                      const formattedKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`
+                      setPrivateKey(formattedKey)
+                      setShowKeyInput(false)
+                    } else {
+                      alert("Please enter a private key")
+                    }
+                  }}
+                  className="px-4 py-2 font-mono text-[10px] uppercase tracking-widest border border-border/40 text-foreground hover:border-accent hover:text-accent transition-colors"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => {
+                    setPrivateKey("")
+                    setShowKeyInput(false)
+                  }}
+                  className="px-4 py-2 font-mono text-[10px] uppercase tracking-widest border border-border/40 text-muted-foreground hover:border-red-400/40 hover:text-red-400 transition-colors"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Two-column body */}
         <div className="flex flex-1 min-h-0 divide-x divide-border/40">
@@ -165,17 +389,57 @@ export default function AgentPage() {
                       </p>
                     )}
                     {m.content}
+                    {m.actions && m.actions.length > 0 && (
+                      <div className="mt-4 pt-4 border-t border-border/30 space-y-2">
+                        <p className="text-[9px] uppercase tracking-widest text-muted-foreground/50 mb-3">Suggested Actions</p>
+                        {m.actions.map((action, actionIdx) => (
+                          <button
+                            key={actionIdx}
+                            onClick={() => executeAction(action)}
+                            disabled={executingAction}
+                            className={`w-full flex items-center justify-between px-3 py-2 border transition-colors disabled:opacity-40 ${
+                              action.type === "supply"
+                                ? "border-emerald-400/40 text-emerald-400 hover:bg-emerald-400/10"
+                                : "border-purple-400/40 text-purple-400 hover:bg-purple-400/10"
+                            }`}
+                          >
+                            <span className="font-mono text-[10px] uppercase tracking-widest">
+                              {action.type === "supply" ? "↑" : "↓"} {action.type} {action.amount} USDC
+                            </span>
+                            <span className="text-[9px] text-muted-foreground/60">
+                              {executingAction ? "Executing..." : "Click to execute"}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     {m.txUrl && (
                       <p className="text-[9px] text-emerald-400/90 mt-3 pt-3 border-t border-border/30">
-                        Payment verified on Base Sepolia. AI query unlocked.{" "}
-                        <a
-                          href={m.txUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="underline hover:text-emerald-300"
-                        >
-                          View on-chain tx{m.txHash ? ` (${m.txHash.slice(0, 10)}...)` : ''}
-                        </a>
+                        {m.txUrl.includes('sepolia.basescan.org') ? (
+                          <>
+                            Transaction confirmed on Base Sepolia.{" "}
+                            <a
+                              href={m.txUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="underline hover:text-emerald-300"
+                            >
+                              View on BaseScan →
+                            </a>
+                          </>
+                        ) : (
+                          <>
+                            Payment verified on Base Sepolia. AI query unlocked.{" "}
+                            <a
+                              href={m.txUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="underline hover:text-emerald-300"
+                            >
+                              View on-chain tx{m.txHash ? ` (${m.txHash.slice(0, 10)}...)` : ''}
+                            </a>
+                          </>
+                        )}
                       </p>
                     )}
                   </div>
