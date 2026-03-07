@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils"
 const navLinks = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/agent", label: "Agent" },
+  { href: "/pool", label: "Pool" },
 ]
 
 export function TopNav() {
