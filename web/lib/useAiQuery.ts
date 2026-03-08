@@ -33,14 +33,16 @@ function getExplorerTxUrl(network: string, txHash: string): string {
 }
 
 /**
- * Demo payment client for x402.
- * In production, replace env-key signing with user wallet signing.
+ * Payment client for x402 using user-provided private key.
+ * @param message - The message to send to the AI agent
+ * @param userPrivateKey - Optional private key from user. If not provided, falls back to env variable.
  */
-export async function queryAiWithPayment(message: string): Promise<AiQueryResult> {
-  const key = process.env.NEXT_PUBLIC_WALLET_PRIVATE_KEY as `0x${string}` | undefined
+export async function queryAiWithPayment(message: string, userPrivateKey?: string): Promise<AiQueryResult> {
+  // Use user-provided key if available, otherwise fallback to env
+  const key = (userPrivateKey || process.env.NEXT_PUBLIC_WALLET_PRIVATE_KEY) as `0x${string}` | undefined
 
   if (!key || key === '0x') {
-    throw new Error('Missing NEXT_PUBLIC_WALLET_PRIVATE_KEY for x402 payment signing')
+    throw new Error('Private key required for x402 payment signing. Please set your private key in the chat interface.')
   }
 
   const account = privateKeyToAccount(key)

@@ -94,7 +94,8 @@ export default function AgentPage() {
     setMessages((prev) => [...prev, userMessage])
     setLoading(true)
     try {
-      const data = await queryAiWithPayment(msg)
+      // Pass the private key from chat state to x402 payment
+      const data = await queryAiWithPayment(msg, privateKey || undefined)
       
       if (data.success) {
         // Parse response for action suggestions, considering user's request
